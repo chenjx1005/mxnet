@@ -6,6 +6,8 @@ from __future__ import absolute_import
 from collections import OrderedDict
 
 import ctypes
+import cv2
+import os
 import sys
 import numpy as np
 import logging
@@ -198,6 +200,7 @@ class PrefetchingIter(DataIter):
         self.iters = iters
         if rename_data is None:
             self.provide_data = sum([i.provide_data for i in iters], [])
+            print self.provide_data
         else:
             self.provide_data = sum([[(r[n], s) for n, s in i.provide_data] \
                                     for r, i in zip(rename_data, iters)], [])
@@ -603,3 +606,212 @@ def _init_io_module():
 
 # Initialize the io in startups
 _init_io_module()
+
+
+class ImageDataIter(DataIter):
+    """DataIter that loads images directly"""
+    def __init__(self, imgpath, data_shape, batch_size, root="", resize_shape="", rand_crop=False, mirror=False, mean_rgb=""):
+        super(ImageDataIter, self).__init__()        
+        with open(imgpath) as f:
+            lines = f.readlines()
+            np.random.shuffle(lines)
+        self.img = lines
+        
+        self.num_data = len(lines)  
+        
+        self.root = root        
+        self.resize_shape = resize_shape
+        self.data_shape = data_shape
+        self.batch_size = batch_size
+        self.mirror = mirror
+        self.mean_rgb = mean_rgb
+        self.rand_crop = rand_crop
+        
+        self.cursor = -batch_size
+
+    @property
+    def provide_data(self):
+        """The name and shape of data provided by this iterator"""
+        return [("data", tuple([self.batch_size] + list(self.data_shape)))]
+
+    @property
+    def provide_label(self):
+        """The name and shape of label provided by this iterator"""
+        return [("softmax_label", tuple([self.batch_size]))]
+
+
+    def hard_reset(self):
+        """Igore roll over data and set to start"""
+        self.cursor = -self.batch_size
+
+    def reset(self):
+        self.cursor = -self.batch_size
+        np.random.shuffle(self.img)
+
+    def iter_next(self):
+        self.cursor += self.batch_size
+        if self.cursor < self.num_data:
+            return True
+        else:
+            return False
+
+    def next(self):
+        if self.iter_next():
+            data, label = self.getdata_label()
+            return DataBatch(data=data, label=label, pad=self.getpad(), index=None)
+        else:
+            raise StopIteration
+
+    def getdata_label(self):
+        data = np.empty([self.batch_size] + list(self.data_shape), np.float32)
+        label = np.empty(self.batch_size, np.float32)
+        for i in range(self.batch_size):
+            # Read image
+            cur_ = (self.cursor + i) % self.num_data  
+            img_info = self.img[cur_].split()
+            filename = img_info[-1]
+            class_ = int(float(img_info[1]))
+            label[i] = class_
+            data[i] = self.load_image(filename)
+        return [array(data)], [array(label)]
+            
+    def load_image(self, filename):                        
+        img = cv2.imread(os.path.join(self.root, filename), cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError('read none error: '+filename)
+        img = img[:,:,(2,1,0)]
+        if self.resize_shape:
+            img = cv2.resize(img, self.resize_shape)
+        # Crop the image        
+        if not (img.shape[:2] == self.data_shape[1:]):
+            h_max = img.shape[0] - self.data_shape[1]
+            w_max = img.shape[1] - self.data_shape[2]
+            assert h_max>=0 and w_max>=0, "crop size is larger than image size"
+            if self.rand_crop:
+                h = np.random.randint(0, h_max+1)
+                w = np.random.randint(0, w_max+1)
+            else:
+                h = h_max / 2
+                w = w_max / 2
+            img = img[h:h+self.data_shape[1], w:w+self.data_shape[2]]
+        img = img.astype(np.float32)
+        if self.mean_rgb:
+            for i in range(3):
+                img[:,:,i] = img[:,:,i] - self.mean_rgb[i]
+        # Mirror
+        if self.mirror and np.random.randint(2):
+            img = img[:, ::-1, :]
+        return img.transpose((2,0,1))
+
+    def getpad(self):
+        return 0
+
+
+class ImageSampleIter(DataIter):
+    """DataIter that loads images directly"""
+    def __init__(self, imgpath_list, data_shape, batch_size, root="", resize_shape="",  mirror=False, mean_rgb=""):
+        self.img_list = []        
+        for imgpath in imgpath_list:     
+            with open(imgpath) as f:
+                lines = f.readlines()
+                np.random.shuffle(lines)
+                self.img_list.append(lines)
+        
+        self.num_class = len(self.img_list)
+        self.num_per_class = [len(imglist) for imglist in self.img_list]
+        self.num_data = sum(self.num_per_class)        
+        
+        self.root = root        
+        self.resize_shape = resize_shape
+        self.data_shape = data_shape
+        self.batch_size = batch_size
+        self.mirror = mirror
+        self.mean_rgb = mean_rgb
+        
+        self.cursor = -batch_size
+        self.class_cursor = 0
+        self.per_class_cursor = [0] * self.num_class
+
+    @property
+    def provide_data(self):
+        """The name and shape of data provided by this iterator"""
+        return [("data", tuple([self.batch_size] + list(self.data_shape)))]
+
+    @property
+    def provide_label(self):
+        """The name and shape of label provided by this iterator"""
+        return [("softmax_label", tuple([self.batch_size]))]
+
+
+    def hard_reset(self):
+        """Igore roll over data and set to start"""
+        self.cursor = -self.batch_size
+
+    def reset(self):
+        self.cursor = -self.batch_size
+
+    def iter_next(self):
+        self.cursor += self.batch_size
+        if self.cursor < self.num_data:
+            return True
+        else:
+            return False
+
+    def next(self):
+        if self.iter_next():
+            data, label = self.getdata_label()
+            return DataBatch(data=data, label=label, pad=self.getpad(), index=None)
+        else:
+            raise StopIteration
+
+    def _move_cursor(self):
+        class_ = self.class_cursor
+        self.class_cursor = class_+1 if class_<self.num_class-1 else 0
+        per_class_ = self.per_class_cursor[class_]
+        if per_class_<self.num_per_class[class_]-1:
+            self.per_class_cursor[class_] = per_class_+1
+        else:
+            np.random.shuffle(self.img_list[class_])
+            self.per_class_cursor[class_] = 0 
+
+    def getdata_label(self):
+        data = np.empty([self.batch_size] + list(self.data_shape), np.float32)
+        label = np.empty(self.batch_size, np.float32)
+        for i in range(self.batch_size):
+            # Read image
+            class_ = self.class_cursor
+            img_list = self.img_list[class_]
+            img_info = img_list[self.per_class_cursor[class_]].split()
+            filename = img_info[-1]
+            label[i] = class_
+            data[i] = self.load_image(filename)
+            # Add cursor
+            self._move_cursor()
+        return [array(data)], [array(label)]
+            
+    def load_image(self, filename):                        
+        img = cv2.imread(os.path.join(self.root, filename), cv2.IMREAD_COLOR)
+        if img is None:
+            raise ValueError('read none error: '+filename)
+        img = img[:,:,(2,1,0)]
+        if self.resize_shape:
+            img = cv2.resize(img, self.resize_shape)
+        # Crop the image        
+        if not (img.shape[:2] == self.data_shape[1:]):
+            h_max = img.shape[0] - self.data_shape[1]
+            w_max = img.shape[1] - self.data_shape[2]
+            assert h_max>=0 and w_max>=0, "crop size is larger than image size"
+            h = np.random.randint(0, h_max+1)
+            w = np.random.randint(0, w_max+1)
+            img = img[h:h+self.data_shape[1], w:w+self.data_shape[2]]
+        img = img.astype(np.float32)
+        if self.mean_rgb:
+            for i in range(3):
+                img[:,:,i] = img[:,:,i] - self.mean_rgb[i]
+        # Mirror
+        if self.mirror and np.random.randint(2):
+            img = img[:, ::-1, :]
+        return img.transpose((2,0,1))
+
+    def getpad(self):
+        return 0

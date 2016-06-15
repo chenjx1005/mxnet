@@ -57,17 +57,23 @@ def get_iterator(args, kv):
 
     train = mx.io.ImageRecordIter(
         path_imgrec = args.data_dir + "train.rec",
-        mean_img    = args.data_dir + "mean.bin",
+        #mean_img    = args.data_dir + "mean.bin",
+        mean_r = 117,
+        mean_g = 117,
+        mean_b = 117,
         data_shape  = data_shape,
         batch_size  = args.batch_size,
         rand_crop   = True,
-        rand_mirror = True,
+        #rand_mirror = True,
         num_parts   = kv.num_workers,
         part_index  = kv.rank)
 
     val = mx.io.ImageRecordIter(
         path_imgrec = args.data_dir + "test.rec",
-        mean_img    = args.data_dir + "mean.bin",
+#        mean_img    = args.data_dir + "mean.bin",
+        mean_r = 117,
+        mean_g = 117,
+        mean_b = 117,
         rand_crop   = False,
         rand_mirror = False,
         data_shape  = data_shape,
@@ -76,6 +82,31 @@ def get_iterator(args, kv):
         part_index  = kv.rank)
 
     return (train, val)
+    
+def get_myiterator(args, kv):
+    data_shape = (3, 28, 28)
+    if '://' not in args.data_dir:
+        _download(args.data_dir)
+        
+    imgpath_list = [args.data_dir+"mylst/cifar_class_%d.lst"%i for i in range(10)]
+    
+    train = mx.io.ImageSampleIter(
+        imgpath_list = imgpath_list,
+        mean_rgb    = (117,117,117),
+        data_shape  = data_shape,
+        batch_size  = args.batch_size,
+        root    = "/home/cc/data/cifar10/train/",
+        mirror = True)
+
+    val = mx.io.ImageDataIter(
+        imgpath     = args.data_dir + "test.lst",
+        mean_rgb    = (117,117,117),
+        data_shape  = data_shape,
+        batch_size  = args.batch_size,
+        root    = "/home/cc/data/cifar10/test/",
+        mirror = False)
+    
+    return (train, val) 
 
 # train
-train_model.fit(args, net, get_iterator)
+train_model.fit(args, net, get_myiterator)
